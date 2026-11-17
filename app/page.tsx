@@ -367,8 +367,11 @@ export default function Home() {
 
     const {
       data: { subscription },
-    } = supabase.auth.onAuthStateChange((_event, session) => {
-      if (session?.user) {
+    } = supabase.auth.onAuthStateChange((event, session) => {
+      if (event === "SIGNED_OUT" || !session) {
+        window.localStorage.removeItem("an-nahl-active-staff");
+        setCurrentUser(null);
+      } else if (session?.user) {
         const userEmail = session.user.email?.toLowerCase();
         const matched =
           STAFF_ACCOUNTS.find(
@@ -455,6 +458,24 @@ export default function Home() {
   useEffect(() => {
     setPage(1);
   }, [query, statusFilter, branchFilter, pageSize, section]);
+
+  // Reliable outside-click listener for popovers and global search
+  useEffect(() => {
+    function onDocumentClick(e: MouseEvent) {
+      const target = e.target as HTMLElement | null;
+      if (!target) return;
+      if (popover && !target.closest(".popover-wrap") && !target.closest(".top-popover")) {
+        setPopover(null);
+      }
+      if (showResults && !target.closest(".search-wrap")) {
+        setShowResults(false);
+      }
+    }
+    document.addEventListener("mousedown", onDocumentClick);
+    return () => {
+      document.removeEventListener("mousedown", onDocumentClick);
+    };
+  }, [popover, showResults]);
 
   // --------------------------------------------------------------------------
   // ACCOUNT-BASED DATA ISOLATION & FILTERING
@@ -693,12 +714,20 @@ export default function Home() {
   }
 
   async function handleSignOut() {
-    if (supabase) {
-      await supabase.auth.signOut();
-    }
+    setBusy(true);
+    setPopover(null);
     window.localStorage.removeItem("an-nahl-active-staff");
     setCurrentUser(null);
-    setPopover(null);
+    try {
+      if (supabase) {
+        await supabase.auth.signOut();
+      }
+    } catch (err) {
+      console.warn("SignOut Supabase warning:", err);
+    } finally {
+      setBusy(false);
+      setMessage("Anda telah berhasil keluar dari akun.");
+    }
   }
 
   function navigate(nextSection: Section) {
@@ -748,7 +777,7 @@ export default function Home() {
   }
 
   function toggleSidebar() {
-    if (window.innerWidth <= 680) setMobileMenuOpen((open) => !open);
+    if (window.innerWidth <= 768) setMobileMenuOpen((open) => !open);
     else setCollapsed((value) => !value);
   }
 
@@ -795,17 +824,27 @@ export default function Home() {
     setError("");
     try {
       if (editing) {
-        const { error: updateError } = await supabase
+        const { data: updatedRows, error: updateError } = await supabase
           .from("travel_records")
           .update(draft)
-          .eq("id", editing.id);
+          .eq("id", editing.id)
+          .select();
         if (updateError) throw updateError;
+        if (updatedRows && updatedRows.length > 0) {
+          setAllRecords((prev) =>
+            prev.map((r) => (r.id === editing.id ? (updatedRows[0] as TravelRecord) : r))
+          );
+        }
         setMessage("Data berhasil diperbarui secara realtime di Supabase.");
       } else {
-        const { error: insertError } = await supabase
+        const { data: insertedRows, error: insertError } = await supabase
           .from("travel_records")
-          .insert(draft);
+          .insert(draft)
+          .select();
         if (insertError) throw insertError;
+        if (insertedRows && insertedRows.length > 0) {
+          setAllRecords((prev) => [insertedRows[0] as TravelRecord, ...prev]);
+        }
         setMessage("Data berhasil ditambahkan secara realtime ke Supabase.");
       }
       setModal(false);
@@ -835,6 +874,7 @@ export default function Home() {
         .delete()
         .eq("id", record.id);
       if (deleteError) throw deleteError;
+      setAllRecords((prev) => prev.filter((r) => r.id !== record.id));
       setMessage("Data berhasil dihapus dari Supabase.");
       return true;
     } catch (deleteError) {
@@ -1159,6 +1199,15 @@ export default function Home() {
             <strong>{currentUser.name}</strong>
             <small>{currentUser.roleLabel}</small>
           </span>
+          <button
+            type="button"
+            className="side-logout-btn"
+            title="Keluar dari akun"
+            aria-label="Keluar dari akun"
+            onClick={() => void handleSignOut()}
+          >
+            ↪
+          </button>
         </div>
       </aside>
 
@@ -1519,6 +1568,17 @@ export default function Home() {
               {darkMode ? "☾" : "☀"}
             </button>
 
+            {/* Direct Quick Logout Button in Topbar */}
+            <button
+              type="button"
+              className="icon-button logout-btn-top"
+              title="Keluar dari akun"
+              aria-label="Keluar dari akun"
+              onClick={() => void handleSignOut()}
+            >
+              ↪
+            </button>
+
             {/* Profile Menu Popover */}
             <div className="popover-wrap">
               <button
@@ -1535,41 +1595,33 @@ export default function Home() {
 
               {popover === "profile" && (
                 <div className="top-popover profile-popover">
-                  <strong>{currentUser.name}</strong>
-                  <small>
-                    {currentUser.roleLabel} · {currentUser.branch}
-                  </small>
+                  <div className="profile-popover-header">
+                    <strong>{currentUser.name}</strong>
+                    <small>
+                      {currentUser.roleLabel} · {currentUser.branch}
+                    </small>
+                  </div>
                   <button
                     type="button"
-                    onClick={() => navigate("settings")}
+                    onClick={() => {
+                      setPopover(null);
+                      navigate("settings");
+                    }}
                   >
                     ⚙ Pengaturan
                   </button>
                   <button
                     type="button"
+                    className="popover-action-btn logout"
                     onClick={() => void handleSignOut()}
                   >
-                    ↪ Keluar
+                    ↪ Keluar dari Akun
                   </button>
                 </div>
               )}
             </div>
           </div>
         </header>
-
-        {/* Global Click Backdrops for Popovers & Search */}
-        {popover && (
-          <div
-            className="popover-backdrop"
-            onClick={() => setPopover(null)}
-          />
-        )}
-        {showResults && (
-          <div
-            className="search-backdrop"
-            onClick={() => setShowResults(false)}
-          />
-        )}
 
         {/* Page Content View */}
         <div className="content">
@@ -1629,6 +1681,7 @@ export default function Home() {
               records={scopedRecords}
               onNavigate={navigate}
               currentUser={currentUser}
+              onSignOut={handleSignOut}
             />
           ) : section === "departures" ? (
             <DepartureCalendar
@@ -3077,12 +3130,14 @@ function Settings({
   records,
   onNavigate,
   currentUser,
+  onSignOut,
 }: {
   tab: SettingsTab;
   onTab: (tab: SettingsTab) => void;
   records: TravelRecord[];
   onNavigate: (section: Section) => void;
   currentUser: StaffAccount;
+  onSignOut?: () => void;
 }) {
   const supabase = useMemo(() => getSupabase(), []);
   const [profile, setProfile] = useState<TravelProfile>({
@@ -3382,6 +3437,30 @@ function Settings({
                   </button>
                 </div>
               </form>
+
+              {/* Keluar dari Akun Session Section */}
+              {onSignOut && (
+                <div
+                  className="settings-row"
+                  style={{
+                    marginTop: "24px",
+                    borderTop: "1px solid var(--border)",
+                    paddingTop: "18px",
+                  }}
+                >
+                  <div>
+                    <strong style={{ color: "var(--danger)" }}>Sesi &amp; Autentikasi</strong>
+                    <small>Keluar dari sesi akun aktif ini di perangkat Anda.</small>
+                  </div>
+                  <button
+                    type="button"
+                    className="button danger"
+                    onClick={onSignOut}
+                  >
+                    ↪ Keluar dari Akun
+                  </button>
+                </div>
+              )}
             </div>
           )}
 
